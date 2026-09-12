@@ -1,0 +1,9 @@
+{
+  "name": "mscs632-apl-project-javascript",
+  "version": "1.0.0",
+  "private": true,
+  "description": "JavaScript implementation of the collaborative to-do list application",
+  "scripts": {
+    "start": "node main.js"
+  }
+}
