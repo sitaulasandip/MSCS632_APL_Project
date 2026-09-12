@@ -4,65 +4,98 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 public class TodoListService {
-    private final Map<Integer, Task> tasks = new ConcurrentHashMap<>();
-    private final AtomicInteger idCounter = new AtomicInteger(1);
+    private Map<Integer, Task> tasks = new java.util.TreeMap<>();
+    private Map<String, User> users = new java.util.TreeMap<>();
+    private int nextId = 1;
+    private final java.nio.file.Path storage;
 
-    public Task addTask(String title, String description, String category, String assignedTo) {
-        Objects.requireNonNull(title, "Title cannot be null");
-        Objects.requireNonNull(description, "Description cannot be null");
-        Objects.requireNonNull(category, "Category cannot be null");
-        Objects.requireNonNull(assignedTo, "Assigned user cannot be null");
+    /** In-memory service, useful for isolated tests. */
+    public TodoListService() { storage = null; }
 
-        int id = idCounter.getAndIncrement();
-        Task task = new Task(id, title, description, category, assignedTo);
-        tasks.put(id, task);
+    public TodoListService(java.nio.file.Path storage) {
+        this.storage = storage.toAbsolutePath();
+        CsvStorage.State state = CsvStorage.load(this.storage);
+        tasks = state.tasks();
+        users = state.users();
+        nextId = state.nextId();
+    }
+
+    private void commit(Map<Integer, Task> newTasks, Map<String, User> newUsers, int newNextId) {
+        if (storage != null) CsvStorage.save(storage, newTasks, newUsers, newNextId);
+        tasks = newTasks;
+        users = newUsers;
+        nextId = newNextId;
+    }
+
+    public synchronized User addUser(String name) {
+        User user = new User(name);
+        String key = user.name().toLowerCase(java.util.Locale.ROOT);
+        if (users.containsKey(key)) throw new IllegalArgumentException("User already exists: " + name);
+        Map<String, User> copy = new java.util.TreeMap<>(users);
+        copy.put(key, user);
+        commit(tasks, copy, nextId);
+        return user;
+    }
+
+    public synchronized List<User> getUsers() { return List.copyOf(users.values()); }
+
+    public synchronized Task addTask(String title, String description, String category, String assignedTo) {
+        if (assignedTo == null) throw new IllegalArgumentException("Assigned user is required");
+        User user = users.get(assignedTo.trim().toLowerCase(java.util.Locale.ROOT));
+        if (user == null) throw new IllegalArgumentException("Unknown user. Add the user first.");
+        if (nextId == Integer.MAX_VALUE) throw new IllegalStateException("Task IDs exhausted");
+        Task task = new Task(nextId, title, description, category, user.name());
+        Map<Integer, Task> copy = new java.util.TreeMap<>(tasks);
+        copy.put(nextId, task);
+        commit(copy, users, nextId + 1);
         return task;
     }
 
-    public Task updateTaskStatus(int taskId, TaskStatus newStatus) {
+    public synchronized Task updateTaskStatus(int taskId, TaskStatus newStatus) {
         Task task = tasks.get(taskId);
-        if (task == null) {
-            throw new IllegalArgumentException("Task not found: " + taskId);
-        }
-
-        task.setStatus(newStatus);
-        return task;
+        if (task == null) throw new IllegalArgumentException("Task not found: " + taskId);
+        Task updated = task.withStatus(newStatus);
+        Map<Integer, Task> copy = new java.util.TreeMap<>(tasks);
+        copy.put(taskId, updated);
+        commit(copy, users, nextId);
+        return updated;
     }
 
-    public boolean deleteTask(int taskId) {
-        return tasks.remove(taskId) != null;
+    public synchronized boolean deleteTask(int taskId) {
+        if (!tasks.containsKey(taskId)) return false;
+        Map<Integer, Task> copy = new java.util.TreeMap<>(tasks);
+        copy.remove(taskId);
+        commit(copy, users, nextId);
+        return true;
     }
 
-    public List<Task> getAllTasks() {
+    public synchronized List<Task> getAllTasks() {
         return new ArrayList<>(tasks.values());
     }
 
-    public List<Task> getTasksByUser(String userName) {
+    public synchronized List<Task> getTasksByUser(String userName) {
         return tasks.values().stream()
                 .filter(task -> task.getAssignedTo().equalsIgnoreCase(userName))
                 .collect(Collectors.toList());
     }
 
-    public List<Task> getTasksByCategory(String category) {
+    public synchronized List<Task> getTasksByCategory(String category) {
         return tasks.values().stream()
                 .filter(task -> task.getCategory().equalsIgnoreCase(category))
                 .collect(Collectors.toList());
     }
 
-    public List<Task> getTasksByStatus(TaskStatus status) {
+    public synchronized List<Task> getTasksByStatus(TaskStatus status) {
         return tasks.values().stream()
                 .filter(task -> task.getStatus() == status)
                 .collect(Collectors.toList());
     }
 
-    public List<Task> searchTasks(String keyword) {
+    public synchronized List<Task> searchTasks(String keyword) {
         String normalized = keyword == null ? "" : keyword.trim().toLowerCase();
         if (normalized.isEmpty()) {
             return getAllTasks();
@@ -76,7 +109,7 @@ public class TodoListService {
                 .collect(Collectors.toList());
     }
 
-    public String getSummary() {
+    public synchronized String getSummary() {
         long total = tasks.size();
         long pending = tasks.values().stream().filter(task -> task.getStatus() == TaskStatus.PENDING).count();
         long inProgress = tasks.values().stream().filter(task -> task.getStatus() == TaskStatus.IN_PROGRESS).count();
@@ -100,7 +133,7 @@ public class TodoListService {
         return summary.toString();
     }
 
-    public Set<Integer> getTaskIds() {
-        return tasks.keySet();
+    public synchronized Set<Integer> getTaskIds() {
+        return Set.copyOf(tasks.keySet());
     }
 }

@@ -4,6 +4,7 @@
   "private": true,
   "description": "JavaScript implementation of the collaborative to-do list application",
   "scripts": {
-    "start": "node main.js"
+    "start": "node main.js",
+    "test": "node test/todo.test.js"
   }
 }

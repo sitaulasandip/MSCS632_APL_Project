@@ -1,57 +1,58 @@
-const TaskStatus = Object.freeze({
-  PENDING: 'PENDING',
-  IN_PROGRESS: 'IN_PROGRESS',
-  COMPLETED: 'COMPLETED'
-});
-
-class Task {
-  constructor(id, title, description, category, assignedTo) {
-    this.id = id;
-    this.title = title;
-    this.description = description;
-    this.category = category;
-    this.assignedTo = assignedTo;
-    this.createdAt = new Date().toISOString();
-    this.status = TaskStatus.PENDING;
-  }
-
-  toString() {
-    return `Task{id=${this.id}, title='${this.title}', description='${this.description}', category='${this.category}', assignedTo='${this.assignedTo}', status=${this.status}, createdAt=${this.createdAt}}`;
-  }
-}
+'use strict';
+const { TaskStatus, Task, User } = require('./models');
+const storage = require('./csvStorage');
+const path = require('node:path');
 
 class TodoListService {
-  constructor() {
-    this.tasks = new Map();
-    this.idCounter = 1;
+  #tasks = new Map();
+  #users = new Map();
+  #nextId = 1;
+  #file;
+  constructor(file = null) {
+    this.#file = file === null ? null : path.resolve(file);
+    if (this.#file) {
+      const state = storage.load(this.#file);
+      this.#tasks = state.tasks; this.#users = state.users; this.#nextId = state.nextId;
+    }
   }
-
+  // No awaits: each operation and its save finish before another event-loop callback runs.
+  // Publish new state only after the snapshot has been saved successfully.
+  #commit(tasks, users, nextId) {
+    if (this.#file) storage.save(this.#file, tasks, users, nextId);
+    this.#tasks = tasks; this.#users = users; this.#nextId = nextId;
+  }
+  addUser(name) {
+    const user = new User(name), key = user.name.toLowerCase();
+    if (this.#users.has(key)) throw new Error(`User already exists: ${name}`);
+    const users = new Map(this.#users); users.set(key, user);
+    this.#commit(this.#tasks, users, this.#nextId);
+    return user;
+  }
+  getUsers() { return [...this.#users.values()].sort((a, b) => a.name.localeCompare(b.name)); }
   addTask(title, description, category, assignedTo) {
-    if (!title || !description || !category || !assignedTo) {
-      throw new Error('Title, description, category, and assigned user are required.');
-    }
-
-    const task = new Task(this.idCounter++, title, description, category, assignedTo);
-    this.tasks.set(task.id, task);
+    const user = this.#users.get(typeof assignedTo === 'string' ? assignedTo.trim().toLowerCase() : '');
+    if (!user) throw new Error('Unknown user. Add the user first.');
+    if (this.#nextId >= 2147483647) throw new Error('Task IDs exhausted');
+    const task = new Task(this.#nextId, title, description, category, user.name);
+    const tasks = new Map(this.#tasks); tasks.set(task.id, task);
+    this.#commit(tasks, this.#users, this.#nextId + 1);
     return task;
   }
-
   updateTaskStatus(taskId, newStatus) {
-    const task = this.tasks.get(taskId);
-    if (!task) {
-      throw new Error(`Task not found: ${taskId}`);
-    }
-
-    task.status = newStatus;
-    return task;
+    const task = this.#tasks.get(taskId);
+    if (!task) throw new Error(`Task not found: ${taskId}`);
+    const updated = task.withStatus(newStatus), tasks = new Map(this.#tasks);
+    tasks.set(taskId, updated); this.#commit(tasks, this.#users, this.#nextId);
+    return updated;
   }
-
   deleteTask(taskId) {
-    return this.tasks.delete(taskId);
+    if (!this.#tasks.has(taskId)) return false;
+    const tasks = new Map(this.#tasks); tasks.delete(taskId);
+    this.#commit(tasks, this.#users, this.#nextId); return true;
   }
 
   getAllTasks() {
-    return Array.from(this.tasks.values());
+    return Array.from(this.#tasks.values()).sort((a, b) => a.id - b.id);
   }
 
   getTasksByUser(userName) {
@@ -81,7 +82,7 @@ class TodoListService {
   }
 
   getSummary() {
-    const total = this.tasks.size;
+    const total = this.#tasks.size;
     const pending = this.getTasksByStatus(TaskStatus.PENDING).length;
     const inProgress = this.getTasksByStatus(TaskStatus.IN_PROGRESS).length;
     const completed = this.getTasksByStatus(TaskStatus.COMPLETED).length;
@@ -109,12 +110,13 @@ class TodoListService {
   }
 
   getTaskIds() {
-    return new Set(this.tasks.keys());
+    return new Set(this.#tasks.keys());
   }
 }
 
 module.exports = {
   TaskStatus,
   Task,
+  User,
   TodoListService
 };

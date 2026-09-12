@@ -1,16 +1,32 @@
 const { TodoListService, TaskStatus } = require('./todoListService');
 const readline = require('readline');
 
-const service = new TodoListService();
+let service;
 const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout
 });
 
-function ask(question) {
-  return new Promise((resolve) => {
-    rl.question(question, (answer) => resolve(answer));
-  });
+// Async iteration retains piped lines as well as interactive terminal input.
+const lines = rl[Symbol.asyncIterator]();
+const EOF = Symbol('EOF');
+async function ask(question) {
+  process.stdout.write(question);
+  const result = await lines.next();
+  if (result.done) throw EOF;
+  return result.value;
+}
+function parseId(value) {
+  if (!/^[+-]?\d+$/.test(value.trim())) throw new Error('Task ID must be an integer');
+  const id = Number(value);
+  if (!Number.isInteger(id) || id < -2147483648 || id > 2147483647) throw new Error('Invalid task ID');
+  return id;
+}
+function printUsers() {
+  const users = service.getUsers();
+  if (!users.length) return console.log('No users registered. Choose option 12 to add a user.');
+  console.log(`Registered users (${users.length}):`);
+  users.forEach(user => console.log(`- ${user.name}`));
 }
 
 function printTasks(tasks) {
@@ -20,12 +36,6 @@ function printTasks(tasks) {
   }
 
   tasks.forEach((task) => console.log(task.toString()));
-}
-
-function seedSampleData() {
-  service.addTask('Write project report', 'Draft the group report for the APL project', 'School', 'Alice');
-  service.addTask('Prepare presentation', 'Build slides for the demo', 'Presentation', 'Bob');
-  service.addTask('Review code', 'Inspect the Java implementation for bugs', 'Development', 'Alice');
 }
 
 async function addTaskFlow() {
@@ -39,10 +49,10 @@ async function addTaskFlow() {
 }
 
 async function updateStatusFlow() {
-  const taskId = Number.parseInt((await ask('Task ID: ')).trim(), 10);
+  const taskId = parseId(await ask('Task ID: '));
   const statusInput = (await ask('New status (PENDING / IN_PROGRESS / COMPLETED): ')).trim().toUpperCase();
 
-  const status = TaskStatus[statusInput];
+  const status = Object.values(TaskStatus).includes(statusInput) ? statusInput : null;
   if (!status) {
     console.log('Invalid status. Please use PENDING, IN_PROGRESS, or COMPLETED.');
     return;
@@ -53,34 +63,30 @@ async function updateStatusFlow() {
 }
 
 async function deleteTaskFlow() {
-  const taskId = Number.parseInt((await ask('Task ID: ')).trim(), 10);
+  const taskId = parseId(await ask('Task ID: '));
   const removed = service.deleteTask(taskId);
   console.log(removed ? 'Task deleted.' : 'Task not found.');
 }
 
 async function simulateConcurrentUpdates() {
-  const tasks = [
-    new Promise((resolve) => setTimeout(() => {
-      service.updateTaskStatus(1, TaskStatus.IN_PROGRESS);
-      resolve();
-    }, 20)),
-    new Promise((resolve) => setTimeout(() => {
-      service.updateTaskStatus(2, TaskStatus.COMPLETED);
-      resolve();
-    }, 10)),
-    new Promise((resolve) => setTimeout(() => {
-      service.updateTaskStatus(3, TaskStatus.IN_PROGRESS);
-      resolve();
-    }, 30))
-  ];
-
-  await Promise.all(tasks);
-  console.log('Concurrent updates complete.');
+  const task = service.getAllTasks()[0];
+  if (!task) return console.log('Add a task first. The demo updates the first task from three asynchronous operations.');
+  console.log('3 asynchronous operations share one service on one event-loop thread.');
+  console.log('Each operation and CSV save completes before the next callback runs.');
+  const results = await Promise.allSettled(Object.values(TaskStatus).map(status =>
+    new Promise((resolve, reject) => setImmediate(() => {
+      try { resolve(service.updateTaskStatus(task.id, status)); } catch (error) { reject(error); }
+    }))));
+  for (const result of results) {
+    console.log(result.status === 'fulfilled' ? `Operation saved: ${result.value}` : `Concurrent update failed: ${result.reason.message}`);
+  }
+  console.log('Concurrent operations finished; last serialized update wins.');
   console.log(service.getSummary());
 }
 
 async function main() {
-  seedSampleData();
+  service = new TodoListService(process.argv[2] || 'data/todo.csv');
+  console.log('Changes are saved automatically. Add users before assigning tasks.');
 
   while (true) {
     console.log('\n=== Collaborative To-Do List (JavaScript) ===');
@@ -95,10 +101,19 @@ async function main() {
     console.log('9. Show summary');
     console.log('10. Simulate concurrent updates');
     console.log('11. Exit');
+    console.log('12. Add user');
+    console.log('13. View users');
 
+    try {
     const input = (await ask('Choose an option: ')).trim();
 
     switch (input) {
+      case '12':
+        console.log(`Added user: ${service.addUser(await ask('User name: '))}`);
+        break;
+      case '13':
+        printUsers();
+        break;
       case '1':
         await addTaskFlow();
         break;
@@ -123,7 +138,7 @@ async function main() {
       }
       case '7': {
         const statusInput = (await ask('Enter status (PENDING / IN_PROGRESS / COMPLETED): ')).trim().toUpperCase();
-        const status = TaskStatus[statusInput];
+        const status = Object.values(TaskStatus).includes(statusInput) ? statusInput : null;
         if (!status) {
           console.log('Invalid status. Please use PENDING, IN_PROGRESS, or COMPLETED.');
         } else {
@@ -149,10 +164,14 @@ async function main() {
       default:
         console.log('Invalid option. Try again.');
     }
+    } catch (error) {
+      if (error === EOF) return;
+      console.log(`Error: ${error.message}`);
+    }
   }
 }
 
 main().catch((error) => {
   console.error(error.message);
-  rl.close();
-});
+  process.exitCode = 1;
+}).finally(() => rl.close());
