@@ -4,14 +4,20 @@ import java.util.List;
 import java.util.Scanner;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 
 public class Main {
-    private static final TodoListService service = new TodoListService();
+    private static TodoListService service;
     private static final Scanner scanner = new Scanner(System.in);
 
     public static void main(String[] args) {
-        seedSampleData();
+        try {
+            service = new TodoListService(java.nio.file.Path.of(args.length == 0 ? "data/todo.csv" : args[0]));
+        } catch (RuntimeException e) {
+            System.err.println(e.getMessage());
+            System.exit(1);
+            return;
+        }
+        System.out.println("Changes are saved automatically. Add users before assigning tasks.");
 
         while (true) {
             System.out.println("\n=== Collaborative To-Do List (Java) ===");
@@ -26,11 +32,22 @@ public class Main {
             System.out.println("9. Show summary");
             System.out.println("10. Simulate concurrent updates");
             System.out.println("11. Exit");
+            System.out.println("12. Add user");
+            System.out.println("13. View users");
             System.out.print("Choose an option: ");
+            if (!scanner.hasNextLine()) return;
 
             String input = scanner.nextLine().trim();
 
+            try {
             switch (input) {
+                case "12":
+                    System.out.print("User name: ");
+                    System.out.println("Added user: " + service.addUser(scanner.nextLine()));
+                    break;
+                case "13":
+                    printUsers(service.getUsers());
+                    break;
                 case "1":
                     addTaskFlow();
                     break;
@@ -71,13 +88,12 @@ public class Main {
                 default:
                     System.out.println("Invalid option. Try again.");
             }
+            } catch (IllegalArgumentException | java.io.UncheckedIOException e) {
+                System.out.println("Error: " + e.getMessage());
+            } catch (java.util.NoSuchElementException e) {
+                return;
+            }
         }
-    }
-
-    private static void seedSampleData() {
-        service.addTask("Write project report", "Draft the group report for the APL project", "School", "Alice");
-        service.addTask("Prepare presentation", "Build slides for the demo", "Presentation", "Bob");
-        service.addTask("Review code", "Inspect the Java implementation for bugs", "Development", "Alice");
     }
 
     private static void addTaskFlow() {
@@ -111,6 +127,17 @@ public class Main {
         System.out.println(removed ? "Task deleted." : "Task not found.");
     }
 
+    private static void printUsers(List<User> users) {
+        if (users.isEmpty()) {
+            System.out.println("No users registered. Choose option 12 to add a user.");
+            return;
+        }
+        System.out.println("Registered users (" + users.size() + "):");
+        for (User user : users) {
+            System.out.println("- " + user.name());
+        }
+    }
+
     private static void printTasks(List<Task> tasks) {
         if (tasks.isEmpty()) {
             System.out.println("No tasks found.");
@@ -123,23 +150,31 @@ public class Main {
     }
 
     private static void simulateConcurrentUpdates() {
+        List<Task> tasks = service.getAllTasks();
+        if (tasks.isEmpty()) {
+            System.out.println("Add a task first. The demo updates the first task from three worker threads.");
+            return;
+        }
+        int id = tasks.get(0).getId();
         ExecutorService pool = Executors.newFixedThreadPool(3);
-
-        pool.submit(() -> service.updateTaskStatus(1, TaskStatus.IN_PROGRESS));
-        pool.submit(() -> service.updateTaskStatus(2, TaskStatus.COMPLETED));
-        pool.submit(() -> service.updateTaskStatus(3, TaskStatus.IN_PROGRESS));
-
+        java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+        List<java.util.concurrent.Future<Task>> results = new java.util.ArrayList<>();
+        for (TaskStatus status : TaskStatus.values()) {
+            results.add(pool.submit(() -> { start.await(); return service.updateTaskStatus(id, status); }));
+        }
+        start.countDown();
         pool.shutdown();
         try {
-            if (!pool.awaitTermination(5, TimeUnit.SECONDS)) {
-                pool.shutdownNow();
-            }
+            for (var result : results) System.out.println("Worker saved: " + result.get());
+            System.out.println("Concurrent updates complete; last serialized update wins.");
+            System.out.println(service.getSummary());
+        } catch (java.util.concurrent.ExecutionException e) {
+            System.out.println("Concurrent update failed: " + e.getCause().getMessage());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             System.out.println("Concurrent update simulation interrupted.");
+        } finally {
+            pool.shutdownNow();
         }
-
-        System.out.println("Concurrent updates complete.");
-        System.out.println(service.getSummary());
     }
 }

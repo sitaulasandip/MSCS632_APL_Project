@@ -5,3 +5,9 @@
 .env.*
 !.env.example
 *.log
+
+# Local Java CSV data
+Java/data/
+
+# Local JavaScript CSV data
+JavaScript/data/
