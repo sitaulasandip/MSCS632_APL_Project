@@ -151,6 +151,20 @@ An update after deletion fails with a missing-task error. An update before delet
 
 **Neither application supports simultaneous independent processes writing the same CSV.** There is no cross-process lock, shared live cache, or multi-client server. JavaScript does not use worker threads. Passing tests verifies the exercised scenarios, not every possible execution schedule.
 
+## Challenges and Design Decisions
+
+The implementations address the following design challenges:
+
+| Challenge | Decision and tradeoff |
+|---|---|
+| Keeping both languages functionally aligned | Use the same menu, task statuses, user-assignment rules, and CSV schema while retaining language-specific implementations. |
+| Coordinating competing task changes | Java synchronizes shared service operations; JavaScript completes each operation and save within one event-loop callback. Both serialize changes within one service instance. |
+| Preventing accidental changes outside the service | Use immutable task/user models and copied query collections. This protects stored state but allocates additional objects. |
+| Keeping saved data consistent with memory | Save a replacement CSV snapshot before publishing the new in-memory state. Failed saves leave the previous state intact; full-file writes add overhead as data grows. |
+| Handling invalid input and CSV formatting | Validate user input and stored records, handle quoted/multiline CSV fields, and report errors. Invalid CLI input returns to the menu; invalid storage stops startup without overwriting the file. |
+
+These choices suit a small CLI demonstration. Simultaneous independent clients would require additional storage coordination or a server/database design.
+
 ## CSV persistence and Excel
 
 Both use the same UTF-8 CSV columns:
